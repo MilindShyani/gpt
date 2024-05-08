@@ -82,8 +82,11 @@ class DecoderLayer(nn.Module):
         pass
 
 class Decoder(nn.Module):
-    def __init__():
+    def __init__(self,num_layers):
         super().__init__()
+        pass
+
+
 
     
     def forward(self,x):
