@@ -16,7 +16,7 @@ class DecoderLayer(nn.Module):
         self.Wv = nn.Linear(hidden_dim, hidden_dim, bias = False) 
         self.Wz = nn.Linear(hidden_dim, hidden_dim, bias = False) 
         self.fc = nn.Linear(hidden_dim, hidden_dim) 
-        self.register_buffer("attention_mask", torch.tril(torch.ones(maxlen,maxlen).view(-1,maxlen.maxlen)))
+        self.register_buffer("attention_mask", torch.tril(torch.ones(maxlen,maxlen).view(1,1,maxlen,maxlen)))
 
 
         self.mlp = nn.Sequential(
@@ -28,8 +28,47 @@ class DecoderLayer(nn.Module):
 
     def attention(self,x):
         # x has shape (B,L,d)
-        # Create attention mask that is (B,L,L)
-        prods.masked_fill(self.attention_mask == 0, float("-inf"))
+        B,L,d = x.shape
+
+        q = self.Wq(x).view(B,L,self.num_heads, self.hidden_dim).transpose(1,2) 
+        k = self.Wk(x).view(B,L,self.num_heads, self.hidden_dim).transpose(1,2) 
+        v = self.Wv(x).view(B,L,self.num_heads, self.hidden_dim).transpose(1,2) 
+
+        # q k v has dimension (B, num_heads , L , hidden_dim)
+
+        attn = torch.einsum("blnh, bLnh -> bnlL" ,q,k) # This multiplication has time complexity B*num_heads*hidden_dim*L^2
+
+        # attn has shape (B,num_heads,L,L)
+
+        # Note that if we had not use multihead, we would have (B,L,num_heads*hidden_dim). Consequently
+        # attn would have been of shape (B,L,L) and time complexity would be B*L^2*num_heads*hidden_dim. So using MHA does not help with time complexity
+        # But MHA does make attn_values low rank because of this split. More details to follow
+
+        # Where the first l is for q and the second for k. That is what we sum over
+        
+        # Create attention mask that is (B,num_heads,L,L)
+        attn.masked_fill(self.attention_mask == 0, float("-inf"))
+
+        attn = attn / torch.sqrt(d)
+
+        attn_values = torch.softmax(attn,dim=-1)        
+
+        # attn_value has shape (B,num_heads,L,L)
+        # v has shape (B,num_heads,L,hidden_dim)
+
+        out = torch.einsum("bnlL,bnLd -> bnld",attn_values,v)
+
+        # out has shape (B,num_heads,L, hidden_dim), where we have summer over keys as before
+
+        out = self.fc(out)
+
+        return
+
+
+
+
+
+        
         
 
 
