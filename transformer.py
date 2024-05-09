@@ -49,50 +49,73 @@ class DecoderLayer(nn.Module):
         # Create attention mask that is (B,num_heads,L,L)
         attn.masked_fill(self.attention_mask == 0, float("-inf"))
 
-        attn = attn / torch.sqrt(d)
+        attn = attn / math.sqrt(d)
 
-        attn_values = torch.softmax(attn,dim=-1)        
+        attn_values = F.softmax(attn,dim=-1)        
 
         # attn_value has shape (B,num_heads,L,L)
         # v has shape (B,num_heads,L,hidden_dim)
-
         out = torch.einsum("bnlL,bnLd -> bnld",attn_values,v)
-
         # out has shape (B,num_heads,L, hidden_dim), where we have summer over keys as before
-
         out = self.fc(out)
-
         return
-
-
-
-
-
-        
-        
-
-
-
-        pass
 
     def MLP(self,x):
         return self.mlp(x)
 
     def forward(self,x):
-        pass
+        y = self.ln1(x)
+        y = self.attention(y)
+        y = self.dropout(y)
+        x = y + x
+        x = self.ln2(x)
+        x = self.mlp(x)
+        return x
+
+
+class positional(nn.Module):
+        def __init__(self,max_len, d) -> None:
+            super().__init__()            
+            denom = torch.exp( 2* torch.arange(0,d//2,1) * (-math.log(1e5)/d) )
+            pe = torch.zeros(max_len,d).unsqueeze(0)
+            pe[:,:,::2] = torch.sin(denom*torch.arange(self.max_len))
+            pe[:,:,1::2] = torch.sin(denom*torch.arange(self.max_len))
+            self.register_buffer("pe",pe)
+
+        def forward(self,x):
+            x = x + self.pe[:,x.shape[1],:]
+            return x
+
 
 class Decoder(nn.Module):
-    def __init__(self,num_layers):
+    def __init__(self,num_layers, hidden_dim, num_heads,max_len = 512):
         super().__init__()
-        pass
+        self.num_layers = num_layers
+        self.num_heads = num_heads
+        self.hidden_dim = hidden_dim
+        self.emin = nn.Embedding(vocab_size,hidden_dim)
+        self.emout = nn.Embedding(hidden_dim,vocab_size)
+        self.stack = nn.ModuleList([DecoderLayer(hidden_dim,num_heads) for _ in range(num_layers)])
+        self.max_len = max_len
+        self.pos = positional(max_len,hidden_dim)
 
 
+    def embed(self,x):
+        # x has shape (B,L,V)
+        x = self.emin(x)
+        # x has shape (B,L,d)
 
+        # And now we add positional encoding
+        x = self.pos(x)    
+        return x
     
-    def forward(self,x):
-        pass
+    def forward(self,x):        
+        x = self.embed(x)
+        for layer in self.stack:
+            x = layer(x)
+        x = self.emout(x)
+        return x
     
-
 
         
 class Transformer():
