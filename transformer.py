@@ -140,30 +140,46 @@ class GPT(nn.Module):
         super().__init__()        
         self.tokenizer = BertTokenizer.from_pretrained('bert-base-uncased')
         vocab_size = self.tokenizer.vocab_size
-        self.decoder = Decoder(num_layers,hidden_dim,num_heads,vocab_size,max_len)
+        self.decoder = Decoder(num_layers,hidden_dim,num_heads,vocab_size,max_len)        
 
-    def infer(self,x):
+    def forward_pass(self,x):
         tokens = self.tokenizer(x,return_tensors="pt", padding=True, truncation= True)
         input_ids = tokens["input_ids"][:,1:-1]                
         attn_mask = tokens["attention_mask"][:,1:-1]                                        
         x = self.decoder(input_ids,attn_mask)                
         return x
-
-    def train(self,s,batch_size=32):
-        pass
-                                                                                
-    
+                                                                               
     def forward(self, s):
-        x = self.infer(s)
-        x = F.softmax(x,-1)
-        # x has shape (B,L,D)
+        x = self.forward_pass(s)
+        x = F.softmax(x,-1)        
         samples = torch.multinomial(einops.rearrange(x,"B L D -> (B L) D"),num_samples=1)
         samples = einops.rearrange(samples,"(B L) p -> B L p", B = len(s)).squeeze()                                        
         out = self.tokenizer.batch_decode(samples) 
         return out
 
 
+
+class train(nn.Module):
+    def __init__(self,model,s,targets,batch_size=32):
+        super().__init__()
+        self.model = model
+        self.loss = nn.CrossEntropyLoss()                      
+
+    
+    def forward(self):
+        for i in range(len(s),batch_size):
+            input_batch = s[i:i+batch_size]
+            target_batch = targets[i:i+batch_size]
+            output = self.forward_pass(input_batch)
+            # output has shape (B,L,d). The shift in targets is for next token prediction obviously
+            batch_loss = self.loss(output[:,:-1,:].transpose(0,2),target_batch[:,1:,:].transpose(0,2))
+            batch_loss.backward()
+
+
+
+
 if __name__ == "__main__":
     gpt = GPT(2,64,8)
+    print(gpt.parameters)
     output = gpt(["quick brown fox jumped over the dog","I like physics"])
     print(output)
