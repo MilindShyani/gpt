@@ -26,7 +26,7 @@ class DecoderLayer(nn.Module):
         )
         self.dropout = nn.Dropout(drop)
 
-    def attention(self,x):
+    def attention(self,x,attn_mask):
         # x has shape (B,L,d)
         B,L,d = x.shape
         
@@ -57,9 +57,14 @@ class DecoderLayer(nn.Module):
         # Where the first l is for q and the second for k. That is what we sum over
         
         # Create attention mask that is (B,num_heads,L,L)
-        print(attn.shape, self.attention_mask[:,:,:L,:L].shape)
-        attn.masked_fill(self.attention_mask[:,:,:L,:L] == 0, float("-inf"))
         
+        attn = attn.masked_fill(self.attention_mask[:,:,:L,:L] == 0, float("-inf"))
+                
+        # attn_mask has shape (B,L)
+        attn_mask = attn_mask.unsqueeze(1).unsqueeze(2)
+        # now it has shape (B,1,1,L)
+        attn = attn.masked_fill(attn_mask == 0, float("-inf"))
+            
         attn = attn / math.sqrt(d)
         attn_values = F.softmax(attn,dim=-1)        
 
@@ -74,23 +79,21 @@ class DecoderLayer(nn.Module):
     def MLP(self,x):
         return self.mlp(x)
 
-    def forward(self,x):
-        y = self.ln1(x)
-        y = self.attention(y)
+    def forward(self,inputs,attn_mask):
+        y = self.ln1(inputs)
+        y = self.attention(y,attn_mask)
         y = self.dropout(y)
-        x = y + x
-        x = self.ln2(x)
-        x = self.mlp(x)
-        return x
+        out = y + inputs
+        out = self.ln2(out)
+        out = self.mlp(out)
+        return out
 
 
 class positional(nn.Module):
         def __init__(self,max_len, d) -> None:
             super().__init__()            
             denom = torch.exp( 2 * torch.arange(0,d//2,1) * (-math.log(1e5)/d) ).unsqueeze(0)
-
-            # denom has shape (1,d//2)
-                        
+            # denom has shape (1,d//2)                        
             pe = torch.zeros(max_len,d).unsqueeze(0)
             pe[0,:,::2] = torch.sin(denom*torch.arange(max_len).unsqueeze(1))
             pe[0,:,1::2] = torch.cos(denom*torch.arange(max_len).unsqueeze(1))
@@ -118,16 +121,15 @@ class Decoder(nn.Module):
         # x has shape (B,L,V)
         x = self.emin(x)
         # x has shape (B,L,d)
-
         # And now we add positional encoding
         x = self.pos(x)    
         return x
     
-    def forward(self,x):        
-        x = self.embed(x)
+    def forward(self,input_ids,attn):        
+        x = self.embed(input_ids)
         print("after embed shape",x.shape)
         for layer in self.stack:
-            x = layer(x)
+            x = layer(x,attn)
         x = self.emout(x)
         return x
     
@@ -140,34 +142,28 @@ class GPT(nn.Module):
         vocab_size = self.tokenizer.vocab_size
         self.decoder = Decoder(num_layers,hidden_dim,num_heads,vocab_size,max_len)
 
-    def forward(self,x):
-        input_t = self.tokenizer(x,return_tensors="pt")["input_ids"]                
-        # fix input_t shape
-        einops.rearrange(input_t,"(L b) -> b L",L=512)
-        x = self.decoder(x)         
+    def infer(self,x):
+        tokens = self.tokenizer(x,return_tensors="pt", padding=True, truncation= True)
+        input_ids = tokens["input_ids"][:,1:-1]                
+        attn_mask = tokens["attention_mask"][:,1:-1]                                        
+        x = self.decoder(input_ids,attn_mask)                
         return x
 
     def train(self,s,batch_size=32):
-        # s is a giant string that we process by chunking
-        # assume that each token has 3 characters. Then 512*3 ~ 1.5K for every input. 
-        # If we want batch size 32, this would mean 50K characters roughly
-        for i in range(len(s),50_000):
-            chunk = s[i:i+50_000]
-                        
-        
-        
-        
-    
-    def infer(self, s,batch_size):
         pass
-
-
-
-
-
+                                                                                
+    
+    def forward(self, s):
+        x = self.infer(s)
+        x = F.softmax(x,-1)
+        # x has shape (B,L,D)
+        samples = torch.multinomial(einops.rearrange(x,"B L D -> (B L) D"),num_samples=1)
+        samples = einops.rearrange(samples,"(B L) p -> B L p", B = len(s)).squeeze()                                        
+        out = self.tokenizer.batch_decode(samples) 
+        return out
 
 
 if __name__ == "__main__":
     gpt = GPT(2,64,8)
-    output = gpt(["quick brown fox fox","I like Physics fox"])
-    print(output.shape)
+    output = gpt(["quick brown fox jumped over the dog","I like physics"])
+    print(output)
