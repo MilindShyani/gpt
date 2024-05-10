@@ -141,10 +141,29 @@ class GPT(nn.Module):
         self.decoder = Decoder(num_layers,hidden_dim,num_heads,vocab_size,max_len)
 
     def forward(self,x):
-        x = self.tokenizer(x,return_tensors="pt")["input_ids"]        
-        print("YOYOYOYO",x)
-        x = self.decoder(x)
+        input_t = self.tokenizer(x,return_tensors="pt")["input_ids"]                
+        # fix input_t shape
+        einops.rearrange(input_t,"(L b) -> b L",L=512)
+        x = self.decoder(x)         
         return x
+
+    def train(self,s,batch_size=32):
+        # s is a giant string that we process by chunking
+        # assume that each token has 3 characters. Then 512*3 ~ 1.5K for every input. 
+        # If we want batch size 32, this would mean 50K characters roughly
+        for i in range(len(s),50_000):
+            chunk = s[i:i+50_000]
+                        
+        
+        
+        
+    
+    def infer(self, s,batch_size):
+        pass
+
+
+
+
 
 
 
