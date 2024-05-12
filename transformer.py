@@ -18,7 +18,6 @@ class DecoderLayer(nn.Module):
         self.fc = nn.Linear(hidden_dim, hidden_dim) 
         self.register_buffer("attention_mask", torch.tril(torch.ones(maxlen,maxlen).view(1,1,maxlen,maxlen)))
 
-
         self.mlp = nn.Sequential(
             nn.Linear(hidden_dim, 4*hidden_dim),
             nn.ReLU(),
@@ -39,25 +38,19 @@ class DecoderLayer(nn.Module):
         v = self.Wv(x)
         v = einops.rearrange(v,"B L (n h)->B n L h",h=self.head_dim) 
 
-
         # q = self.Wq(x).view(B,L,self.num_heads, self.head_dim).transpose(1,2) 
         # k = self.Wk(x).view(B,L,self.num_heads, self.head_dim).transpose(1,2) 
         # v = self.Wv(x).view(B,L,self.num_heads, self.head_dim).transpose(1,2) 
-
         # q k v has dimension (B, num_heads , L , hidden_dim)
-
         attn = torch.einsum("bnlh, bnLh -> bnlL" ,q,k) # This multiplication has time complexity B*num_heads*hidden_dim*L^2
-
         # attn has shape (B,num_heads,L,L)
 
         # Note that if we had not use multihead, we would have (B,L,num_heads*hidden_dim). Consequently
         # attn would have been of shape (B,L,L) and time complexity would be B*L^2*num_heads*hidden_dim. So using MHA does not help with time complexity
         # But MHA does make attn_values low rank because of this split. More details to follow
 
-        # Where the first l is for q and the second for k. That is what we sum over
-        
-        # Create attention mask that is (B,num_heads,L,L)
-        
+        # Where the first l is for q and the second for k. That is what we sum over        
+        # Create attention mask that is (B,num_heads,L,L)        
         attn = attn.masked_fill(self.attention_mask[:,:,:L,:L] == 0, float("-inf"))
                 
         # attn_mask has shape (B,L)
@@ -88,7 +81,6 @@ class DecoderLayer(nn.Module):
         out = self.mlp(out)
         return out
 
-
 class positional(nn.Module):
         def __init__(self,max_len, d) -> None:
             super().__init__()            
@@ -103,7 +95,6 @@ class positional(nn.Module):
             x = x + self.pe[:,x.shape[1],:]
             return x
 
-
 class Decoder(nn.Module):
     def __init__(self,num_layers, hidden_dim, num_heads,vocab_size, max_len = 512):
         super().__init__()
@@ -116,7 +107,6 @@ class Decoder(nn.Module):
         self.max_len = max_len
         self.pos = positional(max_len,hidden_dim)
 
-
     def embed(self,x):
         # x has shape (B,L,V)
         x = self.emin(x)
@@ -127,25 +117,25 @@ class Decoder(nn.Module):
     
     def forward(self,input_ids,attn):        
         x = self.embed(input_ids)
-        print("after embed shape",x.shape)
+        # print("After embed shape",x.shape)
         for layer in self.stack:
             x = layer(x,attn)
         x = self.emout(x)
         return x
-    
-
-        
+            
 class GPT(nn.Module):
     def __init__(self,num_layers,hidden_dim,num_heads,max_len=512) -> None:
         super().__init__()        
-        self.tokenizer = BertTokenizer.from_pretrained('bert-base-uncased')
-        vocab_size = self.tokenizer.vocab_size
-        self.decoder = Decoder(num_layers,hidden_dim,num_heads,vocab_size,max_len)        
+        self.tokenizer = GPT2Tokenizer.from_pretrained('gpt2')
+        self.tokenizer.pad_token = self.tokenizer.unk_token
+        self.vocab_size = self.tokenizer.vocab_size
+        self.decoder = Decoder(num_layers,hidden_dim,num_heads,self.vocab_size,max_len)
+        self.train = 0        
 
     def forward_pass(self,x):
-        tokens = self.tokenizer(x,return_tensors="pt", padding=True, truncation= True)
-        input_ids = tokens["input_ids"][:,1:-1]                
-        attn_mask = tokens["attention_mask"][:,1:-1]                                        
+        self.tokens = self.tokenizer(x,return_tensors="pt",padding=True, truncation=True)
+        input_ids = self.tokens["input_ids"]
+        attn_mask = self.tokens["attention_mask"]
         x = self.decoder(input_ids,attn_mask)                
         return x
                                                                                
@@ -154,32 +144,17 @@ class GPT(nn.Module):
         x = F.softmax(x,-1)        
         samples = torch.multinomial(einops.rearrange(x,"B L D -> (B L) D"),num_samples=1)
         samples = einops.rearrange(samples,"(B L) p -> B L p", B = len(s)).squeeze()                                        
-        out = self.tokenizer.batch_decode(samples) 
-        return out
-
-
-
-class train(nn.Module):
-    def __init__(self,model,s,targets,batch_size=32):
-        super().__init__()
-        self.model = model
-        self.loss = nn.CrossEntropyLoss()                      
-
-    
-    def forward(self):
-        for i in range(len(s),batch_size):
-            input_batch = s[i:i+batch_size]
-            target_batch = targets[i:i+batch_size]
-            output = self.forward_pass(input_batch)
-            # output has shape (B,L,d). The shift in targets is for next token prediction obviously
-            batch_loss = self.loss(output[:,:-1,:].transpose(0,2),target_batch[:,1:,:].transpose(0,2))
-            batch_loss.backward()
-
-
-
+        if not self.train: 
+            out = self.tokenizer.batch_decode(samples)         
+            return out
+        else:
+            return x,self.tokens
 
 if __name__ == "__main__":
-    gpt = GPT(2,64,8)
-    print(gpt.parameters)
+    gpt = GPT(2,64,8)    
+    # for name,module in gpt.named_modules():
+    #     print(name,module)
+    # for name, param in gpt.named_parameters():
+    #     print(name,param.shape)
     output = gpt(["quick brown fox jumped over the dog","I like physics"])
     print(output)
