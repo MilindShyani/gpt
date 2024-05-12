@@ -1,27 +1,35 @@
 from utils import *
 from transformer import *
 import matplotlib.pyplot as plt
+import random
 
 def train(model,loss,optimizer,input,batch_size=32):    
     train_loss = []
     print(data[:3])
-    for i in tqdm(range(0,len(input),batch_size)):
-        optimizer.zero_grad()
-        input_batch = input[i:i+batch_size]        
-        output, tokens = model(input_batch)
-        tokens_onehot = F.one_hot(tokens["input_ids"],num_classes = model.vocab_size).to(torch.float)
-        # output has shape (B,L,d). The shift in targets is for next token prediction obviously
-        batch_loss = loss(output[:,:-1,:].transpose(0,2),tokens_onehot[:,1:].transpose(0,2))
-        batch_loss.backward()
-        optimizer.step()        
-        train_loss.append(batch_loss.item())  
-        if i % 1 == 0:          
-            plt.plot(train_loss)
-            plt.savefig("train_loss")
-            plt.show()
+    for epoch in range(10):
+        for i in tqdm(range(0,len(input),batch_size)):
+            optimizer.zero_grad()
+            input_batch = input[i:i+batch_size]        
+            output, tokens = model(input_batch)
+            attn_mask = tokens["attention_mask"][:,1:]
+            tokens_onehot = F.one_hot(tokens["input_ids"],num_classes = model.vocab_size).to(torch.float)
+            # output has shape (B,L,V). The shift in targets is for next token prediction obviously
+            # So does tokens_onehot
+            batch_loss = loss(output[:,:-1,:].transpose(1,2),tokens_onehot[:,1:].transpose(1,2))
+            # batch_loss has dimensions (B,L)
+            batch_loss = batch_loss*attn_mask
+            batch_loss = torch.mean(batch_loss)
+            batch_loss.backward()
+            optimizer.step()        
+            train_loss.append(batch_loss.item())  
+            if not torch.isfinite(batch_loss):
+                raise Exception("Loss gone crazy")
+            if i % 1 == 0:          
+                plt.plot(train_loss)
+                plt.savefig("train_loss")
+                plt.show()
     return model
                 
-
 if __name__ == "__main__":
     parser = argparse. ArgumentParser()
     parser.add_argument("-nh","--num_heads",type = int)
@@ -30,14 +38,11 @@ if __name__ == "__main__":
     parser.add_argument("-fp", "--file_path",type = str)    
     args = parser.parse_args()
     mymodel = GPT(args.num_layers, args.embed_dim, args.num_heads)
-    optimizer = optim.Adam(mymodel.parameters(),lr=1e-4)    
-    loss = nn.CrossEntropyLoss()
+    optimizer = optim.Adam(mymodel.parameters(),lr=1e-5)    
+    
+    loss = nn.CrossEntropyLoss(reduction="none")
     with open(args.file_path,"rb") as f:
         data = pickle.load(f)    
     mymodel.train = 1
+    random.shuffle(data)
     mymodel = train(mymodel,loss,optimizer,data)
-
-
-
-
-

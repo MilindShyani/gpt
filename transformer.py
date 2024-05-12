@@ -141,10 +141,10 @@ class GPT(nn.Module):
                                                                                
     def forward(self, s):
         x = self.forward_pass(s)
-        x = F.softmax(x,-1)        
-        samples = torch.multinomial(einops.rearrange(x,"B L D -> (B L) D"),num_samples=1)
-        samples = einops.rearrange(samples,"(B L) p -> B L p", B = len(s)).squeeze()                                        
+        x = F.softmax(x,-1)                                                     
         if not self.train: 
+            samples = torch.multinomial(einops.rearrange(x,"B L D -> (B L) D"),num_samples=1)
+            samples = einops.rearrange(samples,"(B L) p -> B L p", B = len(s)).squeeze()   
             out = self.tokenizer.batch_decode(samples)         
             return out
         else:
