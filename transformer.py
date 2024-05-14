@@ -1,5 +1,11 @@
 from utils import *
 
+def backward_hook(module, grad_input, grad_output):
+    print(f"Input grads are {grad_input}")
+    print(f"Output grads are {grad_output}")
+    return
+
+
 class DecoderLayer(nn.Module):
     def __init__(self,hidden_dim, num_heads, maxlen = 512, drop = 0.2):        
         super().__init__()
@@ -122,7 +128,7 @@ class Decoder(nn.Module):
             x = layer(x,attn)
         x = self.emout(x)
         return x
-            
+                        
 class GPT(nn.Module):
     def __init__(self,num_layers,hidden_dim,num_heads,max_len=512) -> None:
         super().__init__()        
@@ -130,6 +136,7 @@ class GPT(nn.Module):
         self.tokenizer.pad_token = self.tokenizer.unk_token
         self.vocab_size = self.tokenizer.vocab_size
         self.decoder = Decoder(num_layers,hidden_dim,num_heads,self.vocab_size,max_len)
+        self.decoder.register_backward_hook(backward_hook)
         self.train = 0        
 
     def forward_pass(self,x):
