@@ -38,7 +38,7 @@ if __name__ == "__main__":
     parser.add_argument("-fp", "--file_path",type = str)    
     args = parser.parse_args()
     mymodel = GPT(args.num_layers, args.embed_dim, args.num_heads)
-    optimizer = optim.Adam(mymodel.parameters(),lr=1e-5)    
+    optimizer = optim.Adam(mymodel.parameters(),lr=1e-3)    
     
     loss = nn.CrossEntropyLoss(reduction="none")
     with open(args.file_path,"rb") as f:

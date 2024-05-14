@@ -140,9 +140,9 @@ class GPT(nn.Module):
         return x
                                                                                
     def forward(self, s):
-        x = self.forward_pass(s)
-        x = F.softmax(x,-1)                                                     
+        x = self.forward_pass(s)                                                             
         if not self.train: 
+            x = F.softmax(x,-1)
             samples = torch.multinomial(einops.rearrange(x,"B L D -> (B L) D"),num_samples=1)
             samples = einops.rearrange(samples,"(B L) p -> B L p", B = len(s)).squeeze()   
             out = self.tokenizer.batch_decode(samples)         
