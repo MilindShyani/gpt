@@ -1,17 +1,18 @@
 from utils import *
 
 def backward_hook(module, grad_input, grad_output):
-    print(f"Input grads are {grad_input}")
-    print(f"Output grads are {grad_output}")
+    # print(f"Input grads are {grad_input}")
+    # print(f"Output grads are {grad_output}")    
     return
 
 
 class DecoderLayer(nn.Module):
-    def __init__(self,hidden_dim, num_heads, maxlen = 512, drop = 0.2):        
+    def __init__(self,hidden_dim, num_heads, layer_num, maxlen = 512, drop = 0.2):        
         super().__init__()
         self.hidden_dim = hidden_dim     
         self.num_heads = num_heads
         self.maxlen = maxlen
+        self.layer_num = layer_num
         self.head_dim = hidden_dim // num_heads   
         assert (hidden_dim % num_heads == 0)
 
@@ -23,6 +24,8 @@ class DecoderLayer(nn.Module):
         self.Wz = nn.Linear(hidden_dim, hidden_dim, bias = False) 
         self.fc = nn.Linear(hidden_dim, hidden_dim) 
         self.register_buffer("attention_mask", torch.tril(torch.ones(maxlen,maxlen).view(1,1,maxlen,maxlen)))
+        self.kv_cache = {}
+        self.init_pass = 0
 
         self.mlp = nn.Sequential(
             nn.Linear(hidden_dim, 4*hidden_dim),
@@ -35,21 +38,38 @@ class DecoderLayer(nn.Module):
         # x has shape (B,L,d)
         B,L,d = x.shape
         
-        q = self.Wq(x)
-        q = einops.rearrange(q,"B L (n h)->B n L h",h=self.head_dim) 
+        if self.train:
+            q = self.Wq(x) 
+            q = einops.rearrange(q,"B L (n h)->B n L h",h=self.head_dim) 
+            # q has shape (B,nh,L,d)
 
-        k = self.Wk(x)
-        k = einops.rearrange(k,"B L (n h)->B n L h",h=self.head_dim) 
+            k = self.Wk(x)
+            k = einops.rearrange(k,"B L (n h)->B n L h",h=self.head_dim) 
 
-        v = self.Wv(x)
-        v = einops.rearrange(v,"B L (n h)->B n L h",h=self.head_dim) 
+            v = self.Wv(x)
+            v = einops.rearrange(v,"B L (n h)->B n L h",h=self.head_dim) 
+        else:
+            if self.init_pass:
+                k = self.Wk(x)
+                k = einops.rearrange(k,"B L (n h)->B n L h",h=self.head_dim) 
+
+                v = self.Wv(x)
+                v = einops.rearrange(v,"B L (n h)->B n L h",h=self.head_dim)
+
+                self.kv_cache[self.layer_num] = (k,v)                
+            else:
+                k, v = self.kv_cache[self.layer_num]
+            
+            q = self.Wq(x) 
+            q = einops.rearrange(q,"B L (n h)->B n L h",h=self.head_dim) 
+            # q has shape (B,nh,1,d)
 
         # q = self.Wq(x).view(B,L,self.num_heads, self.head_dim).transpose(1,2) 
         # k = self.Wk(x).view(B,L,self.num_heads, self.head_dim).transpose(1,2) 
         # v = self.Wv(x).view(B,L,self.num_heads, self.head_dim).transpose(1,2) 
         # q k v has dimension (B, num_heads , L , hidden_dim)
-        attn = torch.einsum("bnlh, bnLh -> bnlL" ,q,k) # This multiplication has time complexity B*num_heads*hidden_dim*L^2
-        # attn has shape (B,num_heads,L,L)
+        attn = torch.einsum("bnlh, bnLh -> bnlL" ,q,k) # This multiplication has time complexity B*num_heads*hidden_dim*L*l
+        # attn has shape (B,num_heads,l|1,L)
 
         # Note that if we had not use multihead, we would have (B,L,num_heads*hidden_dim). Consequently
         # attn would have been of shape (B,L,L) and time complexity would be B*L^2*num_heads*hidden_dim. So using MHA does not help with time complexity
@@ -57,20 +77,21 @@ class DecoderLayer(nn.Module):
 
         # Where the first l is for q and the second for k. That is what we sum over        
         # Create attention mask that is (B,num_heads,L,L)        
-        attn = attn.masked_fill(self.attention_mask[:,:,:L,:L] == 0, float("-inf"))
-                
-        # attn_mask has shape (B,L)
-        attn_mask = attn_mask.unsqueeze(1).unsqueeze(2)
-        # now it has shape (B,1,1,L)
-        attn = attn.masked_fill(attn_mask == 0, float("-inf"))
-            
+        if self.train:
+            # we need the causal mask only when training
+            attn = attn.masked_fill(self.attention_mask[:,:,:L,:L] == 0, float("-inf"))                    
+            # attn_mask has shape (B,L)
+            attn_mask = attn_mask.unsqueeze(1).unsqueeze(2)
+            # now it has shape (B,1,1,L)
+            attn = attn.masked_fill(attn_mask == 0, float("-inf"))
+                    
         attn = attn / math.sqrt(d)
         attn_values = F.softmax(attn,dim=-1)        
 
-        # attn_value has shape (B,num_heads,L,L)
+        # attn_value has shape (B,num_heads,l|1,L)
         # v has shape (B,num_heads,L,hidden_dim)
         out = torch.einsum("bnlL,bnLd -> bnld",attn_values,v)
-        # out has shape (B,num_heads,L, hidden_dim), where we have summer over keys as before
+        # out has shape (B,num_heads,l|1, hidden_dim), where we have summer over keys as before
         out = einops.rearrange(out,"b n L d-> b L (n d)")
         out = self.fc(out)
         return out
@@ -109,7 +130,7 @@ class Decoder(nn.Module):
         self.hidden_dim = hidden_dim
         self.emin = nn.Embedding(vocab_size,hidden_dim)
         self.emout = nn.Linear(hidden_dim,vocab_size)
-        self.stack = nn.ModuleList([DecoderLayer(hidden_dim,num_heads) for _ in range(num_layers)])
+        self.stack = nn.ModuleList([DecoderLayer(hidden_dim,num_heads,layer_num) for layer_num in range(num_layers)])
         self.max_len = max_len
         self.pos = positional(max_len,hidden_dim)
 
@@ -139,29 +160,48 @@ class GPT(nn.Module):
         self.decoder.register_backward_hook(backward_hook)
         self.train = 0        
 
-    def forward_pass(self,x):
+    def tokenize(self,x):
         self.tokens = self.tokenizer(x,return_tensors="pt",padding=True, truncation=True)
         input_ids = self.tokens["input_ids"]
-        attn_mask = self.tokens["attention_mask"]
-        x = self.decoder(input_ids,attn_mask)                
-        return x
-                                                                               
-    def forward(self, s):
-        x = self.forward_pass(s)                                                             
-        if not self.train: 
-            x = F.softmax(x,-1)
+        attn_mask = self.tokens["attention_mask"]        
+        return input_ids, attn_mask
+                                                                                           
+    def forward(self, s):        
+        input_ids, attn_mask = self.tokenize(s)                                                             
+        print(f'Input shape: {input_ids.shape}')
+        x = self.decoder(input_ids,attn_mask)                       
+        return x,self.tokens        
+
+    def generate(self,s,max_tokens = 5):
+        self.train = 0
+        self.init_pass = 1        
+        out = self.forward(s)[0][:,-2:-1,:]                
+        x = F.softmax(out,-1)
+        samples = torch.multinomial(einops.rearrange(x,"B L D -> (B L) D"),num_samples=1)
+        samples = einops.rearrange(samples,"(B L) p -> B L p", B = len(s)).squeeze()   
+        out = self.tokenizer.batch_decode(samples)         
+        for i in range(len(s)):
+            s[i] += out[i]
+        
+        self.init_pass = 0
+        for i in range(1,max_tokens):
+            out = self.forward(s)[0][:,-2:-1,:] 
+            x = F.softmax(out,-1)
             samples = torch.multinomial(einops.rearrange(x,"B L D -> (B L) D"),num_samples=1)
             samples = einops.rearrange(samples,"(B L) p -> B L p", B = len(s)).squeeze()   
-            out = self.tokenizer.batch_decode(samples)         
-            return out
-        else:
-            return x,self.tokens
+            out = self.tokenizer.batch_decode(samples)               
+            for i in range(len(s)):
+                s[i] += out[i]
+        return s        
+    
 
+
+        
 if __name__ == "__main__":
     gpt = GPT(2,64,8)    
     # for name,module in gpt.named_modules():
     #     print(name,module)
     # for name, param in gpt.named_parameters():
     #     print(name,param.shape)
-    output = gpt(["quick brown fox jumped over the dog","I like physics"])
+    output = gpt.generate(["quick brown fox jumped over the dog","I like physics"])
     print(output)
