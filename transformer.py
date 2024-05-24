@@ -168,7 +168,7 @@ class GPT(nn.Module):
                                                                                            
     def forward(self, s):        
         input_ids, attn_mask = self.tokenize(s)                                                             
-        print(f'Input shape: {input_ids.shape}')
+        # print(f'Input shape: {input_ids.shape}')
         x = self.decoder(input_ids,attn_mask)                       
         return x,self.tokens        
 
@@ -177,9 +177,11 @@ class GPT(nn.Module):
         self.init_pass = 1        
         out = self.forward(s)[0][:,-2:-1,:]                
         x = F.softmax(out,-1)
-        samples = torch.multinomial(einops.rearrange(x,"B L D -> (B L) D"),num_samples=1)
+        samples = torch.multinomial(einops.rearrange(x,"B L D -> (B L) D"),num_samples=3)
+        print(samples.shape)
         samples = einops.rearrange(samples,"(B L) p -> B L p", B = len(s)).squeeze()   
         out = self.tokenizer.batch_decode(samples)         
+        print(len(out),out[0])
         for i in range(len(s)):
             s[i] += out[i]
         
@@ -187,7 +189,8 @@ class GPT(nn.Module):
         for i in range(1,max_tokens):
             out = self.forward(s)[0][:,-2:-1,:] 
             x = F.softmax(out,-1)
-            samples = torch.multinomial(einops.rearrange(x,"B L D -> (B L) D"),num_samples=1)
+            samples = torch.multinomial(einops.rearrange(x,"B L D -> (B L) D"),num_samples=3)
+            print(samples.shape)
             samples = einops.rearrange(samples,"(B L) p -> B L p", B = len(s)).squeeze()   
             out = self.tokenizer.batch_decode(samples)               
             for i in range(len(s)):
