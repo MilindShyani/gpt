@@ -7,6 +7,7 @@ def train(model,loss,optimizer,input,batch_size=32):
     train_loss = []
     print(data[:3])
     for epoch in range(10):
+        torch.save(mymodel,f"model_8_8_256_{epoch}.pt")
         for i in tqdm(range(0,len(input),batch_size)):
             optimizer.zero_grad()
             input_batch = input[i:i+batch_size]        
@@ -24,10 +25,11 @@ def train(model,loss,optimizer,input,batch_size=32):
             train_loss.append(batch_loss.item())  
             if not torch.isfinite(batch_loss):
                 raise Exception("Loss gone crazy")
-            if i % 1 == 0:          
+            if i % 500 == 0:          
                 plt.plot(train_loss)
                 plt.savefig("train_loss")
                 plt.show()
+    torch.save(mymodel,"model_8_8_256.pt")
     return model
                 
 if __name__ == "__main__":
@@ -46,3 +48,4 @@ if __name__ == "__main__":
     mymodel.train = 1
     random.shuffle(data)
     mymodel = train(mymodel,loss,optimizer,data)
+    

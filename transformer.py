@@ -198,10 +198,11 @@ class GPT(nn.Module):
 
         
 if __name__ == "__main__":
-    gpt = GPT(2,64,8)    
+    # gpt = GPT(2,64,8)        
     # for name,module in gpt.named_modules():
     #     print(name,module)
     # for name, param in gpt.named_parameters():
     #     print(name,param.shape)
-    output = gpt.generate(["quick brown fox jumped over the dog","I like physics"])
-    print(output)
+    # output = gpt.generate(["quick brown fox jumped over the dog","I like physics"])
+    # print(output)
+    pass
