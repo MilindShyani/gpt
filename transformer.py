@@ -142,11 +142,11 @@ class Decoder(nn.Module):
         x = self.pos(x)    
         return x
     
-    def forward(self,input_ids,attn):        
+    def forward(self,input_ids,attn_mask):        
         x = self.embed(input_ids)
         # print("After embed shape",x.shape)
         for layer in self.stack:
-            x = layer(x,attn)
+            x = layer(x,attn_mask) + x
         x = self.emout(x)
         return x
                         
