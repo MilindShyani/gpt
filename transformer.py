@@ -40,11 +40,7 @@ class DecoderLayer(nn.Module):
         # x has shape (B,L,d)
         B,L,d = x.shape
         
-        if self.train:
-            q = self.Wq(x) 
-            q = einops.rearrange(q,"B L (n h)->B n L h",h=self.head_dim) 
-            # q has shape (B,nh,L,d)
-
+        if self.train:            
             k = self.Wk(x)
             k = einops.rearrange(k,"B L (n h)->B n L h",h=self.head_dim) 
 
@@ -61,10 +57,20 @@ class DecoderLayer(nn.Module):
                 self.kv_cache[self.layer_num] = (k,v)                
             else:
                 k, v = self.kv_cache[self.layer_num]
+                
+                k1 = self.Wk(x)
+                k1 = einops.rearrange(k1,"B L (n h)->B n L h",h=self.head_dim) 
+                k = torch.cat((k,k1),axis=1)
+
+                v1 = self.Wv(x)
+                v1 = einops.rearrange(v1,"B L (n h)->B n L h",h=self.head_dim)
+                v = torch.cat((v,v1),axis=1)
             
-            q = self.Wq(x) 
-            q = einops.rearrange(q,"B L (n h)->B n L h",h=self.head_dim) 
-            # q has shape (B,nh,1,d)
+                self.kv_cache[self.layer_num] = (k,v)                
+
+        q = self.Wq(x) 
+        q = einops.rearrange(q,"B l (n h)->B n l h",h=self.head_dim)             
+        # q has shape (B,nh,l|1,d)
 
         # q = self.Wq(x).view(B,L,self.num_heads, self.head_dim).transpose(1,2) 
         # k = self.Wk(x).view(B,L,self.num_heads, self.head_dim).transpose(1,2) 
@@ -93,7 +99,7 @@ class DecoderLayer(nn.Module):
         attn = attn / math.sqrt(self.head_dim)
         attn_values = F.softmax(attn,dim=-1)        
         attn_values = torch.nan_to_num(attn_values)
-        print(attn_values[1,0])
+        # print(attn_values[1,0])
         # attn_value has shape (B,num_heads,l|1,L)
         # v has shape (B,num_heads,L,head_dim)
         out = torch.einsum("bnlL,bnLh -> bnlh",attn_values,v)
@@ -154,7 +160,7 @@ class Decoder(nn.Module):
         x = self.embed(input_ids)
         # print("After embed shape",x.shape)
         for layer in self.stack:
-            x = layer(x,attn_mask)             
+            x = layer(x,attn_mask) + x            
         x = self.emout(x)
         return x
                         
@@ -190,7 +196,7 @@ class GPT(nn.Module):
         return logits
             
 
-    def topk(self, x, k : int = 20):
+    def topk(self, x, k : int = 10):
         # x has shape B,1,V
         idx = torch.argsort(x,dim=-1)[:,:,:k]
         # idx has shape (B,1,k)
@@ -200,17 +206,46 @@ class GPT(nn.Module):
         x = x.masked_fill(~mask, float('-inf'))
         return x
     
+    def topp(self, x, p: float = 0.9):
+        # x has shape B, 1, V
+        sorted_t = torch.sort(x,axis=-1,descending=True)        
+        # print(torch.cumsum(sorted_t[0][:,0,:],axis=-1))
+        mask = torch.cumsum(sorted_t[0][:,0,:],axis=-1)>p
+        # mask has dim (B,V)
+        idx = torch.argmax(mask.float(),dim=-1)
+        print(idx)
+        # idx has shape (B) and sorted_t[1] has shape (B,1,V)        
+        for i in range(x.shape[0]):
+            list_idx = sorted_t[1][i:i+1,:,:idx[i]]
+            # list_idx has shape (1,1,topp)
+            # x[i:i+1] has shape (1,1,V)
+
+            mask = torch.zeros_like(x[i:i+1], dtype=torch.bool)
+            print(mask.shape, list_idx.shape)
+            mask.scatter_(-1, list_idx, True)
+            x[i:i+1] = x[i:i+1].masked_fill(~mask,float('-inf'))
+
+        return F.softmax(x,-1)
+            
+
+
+
+
+
+
+
         
-    def generate(self,s,max_tokens = 1):
+    def generate(self,s,max_tokens = 4):
         self.train = 0                
         self.init_pass = 1
         for i in range(0,max_tokens):
             out, _ = self.forward(s)
             x = out[:,-2:-1,:]
-            print(x[1])
-            # x = self.freq_penalty(x)        
-            # x = self.topk(x)
+            x = self.freq_penalty(x)        
+            x = self.topk(x)
+            
             x = F.softmax(x,-1)                
+            x = self.topp(x)
 
             samples = torch.multinomial(einops.rearrange(x,"B L V -> (B L) V "),num_samples=1)            
             samples = einops.rearrange(samples,"(B L) p -> B L p", B = len(s)).squeeze()   
@@ -232,5 +267,5 @@ if __name__ == "__main__":
     # for name, param in gpt.named_parameters():
     #     print(name,param.shape)
     output = gpt.generate(["quick brown fox jumped over the dog","I like physics"])
-    print(output[0][1])
+    print(output)
     
