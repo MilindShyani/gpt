@@ -21,13 +21,10 @@ class DecoderLayer(nn.Module):
         self.Wq = nn.Linear(hidden_dim, hidden_dim, bias = False) 
         self.Wk = nn.Linear(hidden_dim, hidden_dim, bias = False) 
         self.Wv = nn.Linear(hidden_dim, hidden_dim, bias = False)
-
-        self.Wz = nn.Linear(hidden_dim, hidden_dim, bias = False) 
-        
+        self.Wz = nn.Linear(hidden_dim, hidden_dim, bias = False)
 
         self.register_buffer("attention_mask", torch.tril(torch.ones(maxlen,maxlen).view(1,1,maxlen,maxlen)))
-        self.kv_cache = {}
-        self.init_pass = 0
+        self.kv_cache = {}        
 
         self.mlp = nn.Sequential(
             nn.Linear(hidden_dim, 4*hidden_dim),
@@ -36,18 +33,20 @@ class DecoderLayer(nn.Module):
         )
         self.dropout = nn.Dropout(drop)
 
-    def attention(self,x,attn_mask):
+    def attention(self,x,attn_mask,train):
         # x has shape (B,L,d)
         B,L,d = x.shape
         
-        if self.train:            
+        if train:            
+            print("HERE")
             k = self.Wk(x)
             k = einops.rearrange(k,"B L (n h)->B n L h",h=self.head_dim) 
 
             v = self.Wv(x)
             v = einops.rearrange(v,"B L (n h)->B n L h",h=self.head_dim) 
         else:
-            if self.init_pass:
+            if x.shape[1] != 1:
+                # print("Creating cache")
                 k = self.Wk(x)
                 k = einops.rearrange(k,"B L (n h)->B n L h",h=self.head_dim) 
 
@@ -60,15 +59,18 @@ class DecoderLayer(nn.Module):
                 
                 k1 = self.Wk(x)
                 k1 = einops.rearrange(k1,"B L (n h)->B n L h",h=self.head_dim) 
-                k = torch.cat((k,k1),axis=1)
+                
+                k = torch.cat((k,k1),axis=2)
 
                 v1 = self.Wv(x)
                 v1 = einops.rearrange(v1,"B L (n h)->B n L h",h=self.head_dim)
-                v = torch.cat((v,v1),axis=1)
+                v = torch.cat((v,v1),axis=2)
             
                 self.kv_cache[self.layer_num] = (k,v)                
+                # print("Using cache and q has shape")
 
         q = self.Wq(x) 
+        # print(q.shape)
         q = einops.rearrange(q,"B l (n h)->B n l h",h=self.head_dim)             
         # q has shape (B,nh,l|1,d)
 
@@ -103,19 +105,20 @@ class DecoderLayer(nn.Module):
         # attn_value has shape (B,num_heads,l|1,L)
         # v has shape (B,num_heads,L,head_dim)
         out = torch.einsum("bnlL,bnLh -> bnlh",attn_values,v)
+        
         # out has shape (B,num_heads,l|1, head_dim), where we have summer over keys as before
         out = einops.rearrange(out,"b n L h-> b L (n h)")
         out = self.Wz(out)
         # out has shape (B,L,D)
-        
+        print(f'out shape is {out.shape}')
         return out
 
     def MLP(self,x):
         return self.mlp(x)
 
-    def forward(self,inputs,attn_mask):
+    def forward(self,inputs,attn_mask,train):
         y = self.ln1(inputs)
-        y = self.attention(y,attn_mask)
+        y = self.attention(y,attn_mask,train)
         y = self.dropout(y)
         out = y + inputs
         out = self.ln2(out)
@@ -123,18 +126,18 @@ class DecoderLayer(nn.Module):
         return out
 
 class positional(nn.Module):
-        def __init__(self,max_len, d) -> None:
-            super().__init__()            
-            denom = torch.exp( 2 * torch.arange(0,d//2,1) * (-math.log(1e5)/d) ).unsqueeze(0)
-            # denom has shape (1,d//2)                        
-            pe = torch.zeros(max_len,d).unsqueeze(0)
-            pe[0,:,::2] = torch.sin(denom*torch.arange(max_len).unsqueeze(1))
-            pe[0,:,1::2] = torch.cos(denom*torch.arange(max_len).unsqueeze(1))
-            self.register_buffer("pe",pe)
+    def __init__(self,max_len, d) -> None:
+        super().__init__()            
+        denom = torch.exp( 2 * torch.arange(0,d//2,1) * (-math.log(1e5)/d) ).unsqueeze(0)
+        # denom has shape (1,d//2)                        
+        pe = torch.zeros(max_len,d).unsqueeze(0)
+        pe[0,:,::2] = torch.sin(denom*torch.arange(max_len).unsqueeze(1))
+        pe[0,:,1::2] = torch.cos(denom*torch.arange(max_len).unsqueeze(1))
+        self.register_buffer("pe",pe)
 
-        def forward(self,x):
-            x = x + self.pe[:,x.shape[1],:]
-            return x
+    def forward(self,x):
+        x = x + self.pe[:,:x.shape[1],:]
+        return x
 
 class Decoder(nn.Module):
     def __init__(self,num_layers, hidden_dim, num_heads,vocab_size, max_len = 512):
@@ -156,11 +159,11 @@ class Decoder(nn.Module):
         x = self.pos(x)    
         return x
     
-    def forward(self,input_ids,attn_mask):        
+    def forward(self,input_ids,attn_mask,train):        
         x = self.embed(input_ids)
         # print("After embed shape",x.shape)
         for layer in self.stack:
-            x = layer(x,attn_mask) + x            
+            x = layer(x,attn_mask,train) + x            
         x = self.emout(x)
         return x
                         
@@ -171,9 +174,10 @@ class GPT(nn.Module):
         self.tokenizer.pad_token = self.tokenizer.unk_token
         self.tokenizer.padding_side = "left"
         self.vocab_size = self.tokenizer.vocab_size
+        self.train = 0        
         self.decoder = Decoder(num_layers,hidden_dim,num_heads,self.vocab_size,max_len)
         self.decoder.register_backward_hook(backward_hook)
-        self.train = 0        
+        
 
     def tokenize(self,x):
         self.tokens = self.tokenizer(x,return_tensors="pt",padding=True, truncation=True)
@@ -182,23 +186,23 @@ class GPT(nn.Module):
         return 
                                                                                            
     def forward(self, s):                
-        self.tokenize(s)
+        self.tokenize(s) 
         print(f'Input shape: {self.input_ids.shape}, {self.attn_mask}')
-        x = self.decoder(self.input_ids,self.attn_mask)                       
+        x = self.decoder(self.input_ids,self.attn_mask,self.train)                       
         return x,self.tokens        
     
     def freq_penalty(self,logits,penalty: float = 1):
-        # logits has shape (B,1,V)
+        # logits has shape (B,V)
         # input_ids have shape (B,L)    
         for i in range(len(self.input_ids)):
             counts = torch.bincount(self.input_ids[i,:], minlength = logits.shape[-1])
-            logits[i,0,:] -= penalty*counts
+            logits[i,:] -= penalty*counts
         return logits
             
 
     def topk(self, x, k : int = 10):
-        # x has shape B,1,V
-        idx = torch.argsort(x,dim=-1)[:,:,:k]
+        # x has shape B,V
+        idx = torch.argsort(x,dim=-1)[:,:k]
         # idx has shape (B,1,k)
         # these are the ids where prob stays         
         mask = torch.zeros_like(x, dtype=torch.bool)
@@ -207,54 +211,48 @@ class GPT(nn.Module):
         return x
     
     def topp(self, x, p: float = 0.9):
-        # x has shape B, 1, V
+        # x has shape B, V
         sorted_t = torch.sort(x,axis=-1,descending=True)        
         # print(torch.cumsum(sorted_t[0][:,0,:],axis=-1))
-        mask = torch.cumsum(sorted_t[0][:,0,:],axis=-1)>p
+        mask = torch.cumsum(sorted_t[0],axis=-1)>p
         # mask has dim (B,V)
         idx = torch.argmax(mask.float(),dim=-1)
-        print(idx)
+        # print(idx)
         # idx has shape (B) and sorted_t[1] has shape (B,1,V)        
         for i in range(x.shape[0]):
-            list_idx = sorted_t[1][i:i+1,:,:idx[i]]
-            # list_idx has shape (1,1,topp)
-            # x[i:i+1] has shape (1,1,V)
+            list_idx = sorted_t[1][i:i+1,:idx[i]]
+            # list_idx has shape (1,topp)
+            # x[i:i+1] has shape (1,V)
 
             mask = torch.zeros_like(x[i:i+1], dtype=torch.bool)
-            print(mask.shape, list_idx.shape)
+            # print(mask.shape, list_idx.shape)
             mask.scatter_(-1, list_idx, True)
             x[i:i+1] = x[i:i+1].masked_fill(~mask,float('-inf'))
 
         return F.softmax(x,-1)
             
-
-
-
-
-
-
-
         
-    def generate(self,s,max_tokens = 4):
-        self.train = 0                
-        self.init_pass = 1
+    def generate(self,s,max_tokens = 4):               
+        S = s.copy()  
+        out = s               
         for i in range(0,max_tokens):
-            out, _ = self.forward(s)
-            x = out[:,-2:-1,:]
+            out, _ = self.forward(out)
+            print(out.shape)
+            x = out[:,-1,:]
+            
             x = self.freq_penalty(x)        
+            
             x = self.topk(x)
             
             x = F.softmax(x,-1)                
             x = self.topp(x)
 
-            samples = torch.multinomial(einops.rearrange(x,"B L V -> (B L) V "),num_samples=1)            
-            samples = einops.rearrange(samples,"(B L) p -> B L p", B = len(s)).squeeze()   
+            samples = torch.multinomial(x, num_samples=1)                        
             out = self.tokenizer.batch_decode(samples)               
-            for i in range(len(s)):
-                s[i] += out[i]
-            if i == 0:
-                self.init_pass = 0            
-        return s        
+            for i in range(len(S)):
+                S[i] += out[i]          
+                       
+        return S        
          
     
 
