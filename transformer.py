@@ -136,8 +136,88 @@ class positional(nn.Module):
         self.register_buffer("pe",pe)
 
     def forward(self,x):
-        x = x + self.pe[:,:x.shape[1],:]
+        x = x + self.pe[:,:x.shape[1],:] # need to fix this for inference time position. Need shape of kv cache for it
+        return x    
+
+class tokenize():
+    def __init__(self, tokenizer = GPT2Tokenizer.from_pretrained('gpt2')):
+        self.tokenizer = tokenizer        
+        self.tokenizer.pad_token = self.tokenizer.unk_token
+        self.tokenizer.padding_side = "left"
+        self.vocab_size = self.tokenizer.vocab_size
+
+    def forward(self,x):
+        self.tokens = self.tokenizer(x,return_tensors="pt",padding=True, truncation=True)
+        self.input_ids = self.tokens["input_ids"]
+        self.attn_mask = self.tokens["attention_mask"]        
+        return 
+
+class generate():
+    def __init__(self,tokenizer):
+        self.tokenizer= tokenizer
+
+    def forward(self,s):
+        S = s.copy()  
+        out = s               
+        for i in range(0,max_tokens):
+            out, _ = self.forward(out)
+            print(out.shape)
+            x = out[:,-1,:]
+            
+            x = self.freq_penalty(x)        
+            
+            x = self.topk(x)
+            
+            x = F.softmax(x,-1)                
+            x = self.topp(x)
+
+            samples = torch.multinomial(x, num_samples=1)                        
+            out = self.tokenizer.batch_decode(samples)               
+            for i in range(len(S)):
+                S[i] += out[i]          
+        return S     
+
+    def freq_penalty(self,logits,penalty: float = 1):
+        # logits has shape (B,V)
+        # input_ids have shape (B,L)    
+        for i in range(len(self.input_ids)):
+            counts = torch.bincount(self.input_ids[i,:], minlength = logits.shape[-1])
+            logits[i,:] -= penalty*counts
+        return logits
+            
+
+    def topk(self, x, k : int = 10):
+        # x has shape B,V
+        idx = torch.argsort(x,dim=-1)[:,:k]
+        # idx has shape (B,1,k)
+        # these are the ids where prob stays         
+        mask = torch.zeros_like(x, dtype=torch.bool)
+        mask.scatter_(-1, idx, True)
+        x = x.masked_fill(~mask, float('-inf'))
         return x
+
+    def topp(self, x, p: float = 0.9):
+        # x has shape B, V
+        sorted_t = torch.sort(x,axis=-1,descending=True)        
+        # print(torch.cumsum(sorted_t[0][:,0,:],axis=-1))
+        mask = torch.cumsum(sorted_t[0],axis=-1)>p
+        # mask has dim (B,V)
+        idx = torch.argmax(mask.float(),dim=-1)
+        # print(idx)
+        # idx has shape (B) and sorted_t[1] has shape (B,1,V)        
+        for i in range(x.shape[0]):
+            list_idx = sorted_t[1][i:i+1,:idx[i]]
+            # list_idx has shape (1,topp)
+            # x[i:i+1] has shape (1,V)
+
+            mask = torch.zeros_like(x[i:i+1], dtype=torch.bool)
+            # print(mask.shape, list_idx.shape)
+            mask.scatter_(-1, list_idx, True)
+            x[i:i+1] = x[i:i+1].masked_fill(~mask,float('-inf'))
+
+        return F.softmax(x,-1)
+
+
 
 class Decoder(nn.Module):
     def __init__(self,num_layers, hidden_dim, num_heads,vocab_size, max_len = 512):
@@ -170,96 +250,31 @@ class Decoder(nn.Module):
 class GPT(nn.Module):
     def __init__(self,num_layers,hidden_dim,num_heads,max_len=512) -> None:
         super().__init__()        
-        self.tokenizer = GPT2Tokenizer.from_pretrained('gpt2')
-        self.tokenizer.pad_token = self.tokenizer.unk_token
-        self.tokenizer.padding_side = "left"
-        self.vocab_size = self.tokenizer.vocab_size
+        
         self.train = 0        
         self.decoder = Decoder(num_layers,hidden_dim,num_heads,self.vocab_size,max_len)
-        self.decoder.register_backward_hook(backward_hook)
+        self.decoder.register_backward_hook(backward_hook)                        
+        self.generate = generate(self.tokenizer)
         
-
-    def tokenize(self,x):
-        self.tokens = self.tokenizer(x,return_tensors="pt",padding=True, truncation=True)
-        self.input_ids = self.tokens["input_ids"]
-        self.attn_mask = self.tokens["attention_mask"]        
-        return 
-                                                                                           
+    
     def forward(self, s):                
         self.tokenize(s) 
         print(f'Input shape: {self.input_ids.shape}, {self.attn_mask}')
         x = self.decoder(self.input_ids,self.attn_mask,self.train)                       
-        return x,self.tokens        
-    
-    def freq_penalty(self,logits,penalty: float = 1):
-        # logits has shape (B,V)
-        # input_ids have shape (B,L)    
-        for i in range(len(self.input_ids)):
-            counts = torch.bincount(self.input_ids[i,:], minlength = logits.shape[-1])
-            logits[i,:] -= penalty*counts
-        return logits
-            
+        return x,self.tokens 
 
-    def topk(self, x, k : int = 10):
-        # x has shape B,V
-        idx = torch.argsort(x,dim=-1)[:,:k]
-        # idx has shape (B,1,k)
-        # these are the ids where prob stays         
-        mask = torch.zeros_like(x, dtype=torch.bool)
-        mask.scatter_(-1, idx, True)
-        x = x.masked_fill(~mask, float('-inf'))
-        return x
-    
-    def topp(self, x, p: float = 0.9):
-        # x has shape B, V
-        sorted_t = torch.sort(x,axis=-1,descending=True)        
-        # print(torch.cumsum(sorted_t[0][:,0,:],axis=-1))
-        mask = torch.cumsum(sorted_t[0],axis=-1)>p
-        # mask has dim (B,V)
-        idx = torch.argmax(mask.float(),dim=-1)
-        # print(idx)
-        # idx has shape (B) and sorted_t[1] has shape (B,1,V)        
-        for i in range(x.shape[0]):
-            list_idx = sorted_t[1][i:i+1,:idx[i]]
-            # list_idx has shape (1,topp)
-            # x[i:i+1] has shape (1,V)
-
-            mask = torch.zeros_like(x[i:i+1], dtype=torch.bool)
-            # print(mask.shape, list_idx.shape)
-            mask.scatter_(-1, list_idx, True)
-            x[i:i+1] = x[i:i+1].masked_fill(~mask,float('-inf'))
-
-        return F.softmax(x,-1)
-            
+                  
         
-    def generate(self,s,max_tokens = 4):               
-        S = s.copy()  
-        out = s               
-        for i in range(0,max_tokens):
-            out, _ = self.forward(out)
-            print(out.shape)
-            x = out[:,-1,:]
-            
-            x = self.freq_penalty(x)        
-            
-            x = self.topk(x)
-            
-            x = F.softmax(x,-1)                
-            x = self.topp(x)
-
-            samples = torch.multinomial(x, num_samples=1)                        
-            out = self.tokenizer.batch_decode(samples)               
-            for i in range(len(S)):
-                S[i] += out[i]          
                        
-        return S        
+           
          
     
 
 
         
 if __name__ == "__main__":
-    gpt = GPT(2,64,8)        
+    # gpt = GPT(2,64,8)        
+    gpt = torch.load("model_8_8_256_2.pt")
     # for name,module in gpt.named_modules():
     #     print(name,module)
     # for name, param in gpt.named_parameters():
