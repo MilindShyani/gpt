@@ -151,10 +151,6 @@ class tokenizer():
         return self.tokens
 
 
-    
-
-
-
 class Decoder(nn.Module):
     def __init__(self,num_layers, hidden_dim, num_heads,vocab_size, max_len = 512):
         super().__init__()
@@ -198,11 +194,15 @@ class GPT(nn.Module):
         x = self.decoder(input_ids,attn_mask,self.train)                            
         return x 
     
-    def generate(self,input_ids,attn_mask,max_tokens = 5, k = 10,p: float = 0.9):                      
+    def generate(self,input_ids,attn_mask,max_tokens = 5, k = 10,p: float = 0.9,penalty: float = 1):                      
         for i in range(0,max_tokens):
             out = self.forward(input_ids,attn_mask)        
             x = out[:,-1,:]            
-            # x = self.freq_penalty(x)                    
+   
+            for i in range(len(input_ids)):
+                counts = torch.bincount(input_ids[i,:], minlength = x.shape[-1])
+                x[i,:] -= penalty*counts
+        
                   
             idx = torch.argsort(x,dim=-1)[:,:k]
             # idx has shape (B,1,k)
@@ -241,13 +241,7 @@ class GPT(nn.Module):
             print(input_ids.shape)                                 
         return input_ids, attn_mask     
 
-    # def freq_penalty(self,logits,penalty: float = 1):
-    #     # logits has shape (B,V)
-    #     # input_ids have shape (B,L)    
-    #     for i in range(len(self.input_ids)):
-    #         counts = torch.bincount(self.input_ids[i,:], minlength = logits.shape[-1])
-    #         logits[i,:] -= penalty*counts
-    #     return logits
+
             
 
    
