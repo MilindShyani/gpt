@@ -150,7 +150,6 @@ class tokenizer():
         self.tokens = self.tokenizer(x,return_tensors=return_tensors,padding=padding, truncation=truncation)                
         return self.tokens
 
-
 class Decoder(nn.Module):
     def __init__(self,num_layers, hidden_dim, num_heads,vocab_size, max_len = 512):
         super().__init__()
@@ -186,8 +185,7 @@ class GPT(nn.Module):
         self.embed_size = vocab_size
         self.decoder = Decoder(num_layers,hidden_dim,num_heads,self.embed_size,max_len)
         self.decoder.register_backward_hook(backward_hook)                                
-        
-    
+            
     def forward(self, input_ids, attn_mask):                
         # self.tokenize(s) 
         # print(f'Input shape: {self.input_ids.shape}, {self.attn_mask}')
@@ -202,8 +200,7 @@ class GPT(nn.Module):
             for i in range(len(input_ids)):
                 counts = torch.bincount(input_ids[i,:], minlength = x.shape[-1])
                 x[i,:] -= penalty*counts
-        
-                  
+                          
             idx = torch.argsort(x,dim=-1)[:,:k]
             # idx has shape (B,1,k)
             # these are the ids where prob stays         
@@ -241,21 +238,7 @@ class GPT(nn.Module):
             print(input_ids.shape)                                 
         return input_ids, attn_mask     
 
-
-            
-
-   
-
-   
-
-                  
-        
                        
-           
-         
-    
-
-
         
 if __name__ == "__main__":
     gpt = GPT(2,64,8,vocab_size=GPT2Tokenizer.from_pretrained('gpt2').vocab_size)        

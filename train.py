@@ -7,7 +7,7 @@ def train(model,loss,optimizer,input,batch_size=32):
     train_loss = []
     print(data[:3])
     for epoch in range(10):
-        torch.save(mymodel,f"model_8_8_256_{epoch}.pt")
+        torch.save(mymodel,f"model_16_2_256_{epoch}.pt")
         for i in tqdm(range(0,len(input),batch_size)):
             optimizer.zero_grad()
             input_batch = input[i:i+batch_size]        
@@ -29,7 +29,7 @@ def train(model,loss,optimizer,input,batch_size=32):
                 plt.plot(train_loss)
                 plt.savefig("train_loss")
                 plt.show()
-    torch.save(mymodel,"model_8_8_256.pt")
+    torch.save(mymodel,"model_16_2_256.pt")
     return model
                 
 if __name__ == "__main__":
@@ -37,9 +37,9 @@ if __name__ == "__main__":
     parser.add_argument("-nh","--num_heads",type = int)
     parser.add_argument("-nl","--num_layers",type = int)
     parser.add_argument("-d", "--embed_dim",type = int)    
-    parser.add_argument("-fp", "--file_path",type = str)    
+    parser.add_argument("-fp", "--file_path",type = str,default="/home/mshyani/compression_embeddings/datasets/tinystories.pkl")    
     args = parser.parse_args()
-    mymodel = GPT(args.num_layers, args.embed_dim, args.num_heads)
+    mymodel = GPT(args.num_layers, args.embed_dim, args.num_heads,vocab_size=GPT2Tokenizer.from_pretrained('gpt2').vocab_size)
     optimizer = optim.Adam(mymodel.parameters(),lr=1e-3)    
     
     loss = nn.CrossEntropyLoss(reduction="none")
