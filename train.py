@@ -11,7 +11,7 @@ def train(model,loss,optimizer,input,batch_size=32):
         for i in tqdm(range(0,len(input),batch_size)):
             optimizer.zero_grad()
             input_batch = input[i:i+batch_size]        
-            output, tokens = model(input_batch)
+            output, tokens = model.forward(input_batch)
             attn_mask = tokens["attention_mask"][:,1:]
             tokens_onehot = F.one_hot(tokens["input_ids"],num_classes = model.vocab_size).to(torch.float)
             # output has shape (B,L,V). The shift in targets is for next token prediction obviously
