@@ -38,7 +38,7 @@ class DecoderLayer(nn.Module):
         B,L,d = x.shape
         
         if train:            
-            print("HERE")
+            
             k = self.Wk(x)
             k = einops.rearrange(k,"B L (n h)->B n L h",h=self.head_dim) 
 
@@ -181,9 +181,12 @@ class Decoder(nn.Module):
 class GPT(nn.Module):
     def __init__(self,num_layers,hidden_dim,num_heads, vocab_size, max_len=512) -> None:
         super().__init__()                
-        self.train = 0        
-        self.embed_size = vocab_size
-        self.decoder = Decoder(num_layers,hidden_dim,num_heads,self.embed_size,max_len)
+        self.train = 0                
+        self.vocab_size = vocab_size
+        self.hidden_dim = hidden_dim
+        self.num_heads = num_heads
+        self.num_layers = num_layers
+        self.decoder = Decoder(num_layers,hidden_dim,num_heads,self.vocab_size,max_len)
         self.decoder.register_backward_hook(backward_hook)                                
             
     def forward(self, input_ids, attn_mask):                

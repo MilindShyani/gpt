@@ -3,22 +3,23 @@ from transformer import *
 import matplotlib.pyplot as plt
 import random
 
-def train(model,loss,optimizer,input,batch_size=32):    
+def train(model,loss,optimizer,tokens,batch_size=4):    
     train_loss = []
-    print(data[:3])
+    input_ids, attention_mask = tokens["input_ids"], tokens["attention_mask"]
     for epoch in range(10):
-        torch.save(mymodel,f"model_16_2_256_{epoch}.pt")
-        for i in tqdm(range(0,len(input),batch_size)):
+        torch.save(mymodel,f"model_{model.num_heads}_{model.num_layers}_{model.hidden_dim}_{epoch}.pt")
+        for i in tqdm(range(0,len(input_ids),batch_size)):
             optimizer.zero_grad()
-            input_batch = input[i:i+batch_size]        
-            output, tokens = model.forward(input_batch)
-            attn_mask = tokens["attention_mask"][:,1:]
-            tokens_onehot = F.one_hot(tokens["input_ids"],num_classes = model.vocab_size).to(torch.float)
+            input_batch = input_ids[i:i+batch_size]        
+            attn_batch = attention_mask[i:i+batch_size]        
+            output = model.forward(input_batch,attn_batch)
+            
+            tokens_onehot = F.one_hot(input_batch,num_classes = model.vocab_size).to(torch.float)
             # output has shape (B,L,V). The shift in targets is for next token prediction obviously
             # So does tokens_onehot
             batch_loss = loss(output[:,:-1,:].transpose(1,2),tokens_onehot[:,1:].transpose(1,2))
             # batch_loss has dimensions (B,L)
-            batch_loss = batch_loss*attn_mask
+            batch_loss = batch_loss*attn_batch[:,1:] # double check this 1: vs :-1
             batch_loss = torch.mean(batch_loss)
             batch_loss.backward()
             optimizer.step()        
@@ -29,14 +30,14 @@ def train(model,loss,optimizer,input,batch_size=32):
                 plt.plot(train_loss)
                 plt.savefig("train_loss")
                 plt.show()
-    torch.save(mymodel,"model_16_2_256.pt")
+    torch.save(mymodel,f"model_{model.num_heads}_{model.num_layers}_{model.hidden_dim}_final.pt")
     return model
                 
 if __name__ == "__main__":
     parser = argparse. ArgumentParser()
-    parser.add_argument("-nh","--num_heads",type = int)
-    parser.add_argument("-nl","--num_layers",type = int)
-    parser.add_argument("-d", "--embed_dim",type = int)    
+    parser.add_argument("-nh","--num_heads",type = int, default = 16)
+    parser.add_argument("-nl","--num_layers",type = int, default = 4)
+    parser.add_argument("-d", "--embed_dim",type = int, default = 256)    
     parser.add_argument("-fp", "--file_path",type = str,default="/home/mshyani/compression_embeddings/datasets/tinystories.pkl")    
     args = parser.parse_args()
     mymodel = GPT(args.num_layers, args.embed_dim, args.num_heads,vocab_size=GPT2Tokenizer.from_pretrained('gpt2').vocab_size)
@@ -46,6 +47,8 @@ if __name__ == "__main__":
     with open(args.file_path,"rb") as f:
         data = pickle.load(f)    
     mymodel.train = 1
+    mytokenizer = tokenizer()    
     random.shuffle(data)
-    mymodel = train(mymodel,loss,optimizer,data)
+    tokens = mytokenizer.forward(data)
+    mymodel = train(mymodel,loss,optimizer,tokens)
     
