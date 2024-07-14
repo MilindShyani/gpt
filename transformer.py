@@ -22,6 +22,7 @@ class DecoderLayer(nn.Module):
         self.Wk = nn.Linear(hidden_dim, hidden_dim, bias = False) 
         self.Wv = nn.Linear(hidden_dim, hidden_dim, bias = False)
         self.Wz = nn.Linear(hidden_dim, hidden_dim, bias = False)
+        self.Wz.feed_into_res = 1
 
         self.register_buffer("attention_mask", torch.tril(torch.ones(maxlen,maxlen).view(1,1,maxlen,maxlen)))
         self.kv_cache = {}        
@@ -31,6 +32,7 @@ class DecoderLayer(nn.Module):
             nn.ReLU(),
             nn.Linear(4*hidden_dim, hidden_dim) 
         )
+        self.mlp[-1].feed_into_res = 1
         self.dropout = nn.Dropout(drop)
 
     def attention(self,x,attn_mask,train):
@@ -96,10 +98,10 @@ class DecoderLayer(nn.Module):
         # attn_mask has now shape (B,1,1,L)
         attn = attn.masked_fill(attn_mask == 0, float("-inf"))
         # attn has shape (B,nh,l|1,L)
-        
-                    
-        attn = attn / math.sqrt(self.head_dim)
+        #                             
+        attn /= math.sqrt(self.head_dim)
         attn_values = F.softmax(attn,dim=-1)        
+
         attn_values = torch.nan_to_num(attn_values)
         # print(attn_values[1,0])
         # attn_value has shape (B,num_heads,l|1,L)
@@ -156,7 +158,7 @@ class Decoder(nn.Module):
         self.num_layers = num_layers
         self.num_heads = num_heads
         self.hidden_dim = hidden_dim
-        self.emin = nn.Embedding(vocab_size,hidden_dim)
+        self.emin = nn.Embedding(vocab_size,hidden_dim) # we keep the in and out embeddings untied  
         self.emout = nn.Linear(hidden_dim,vocab_size)
         self.stack = nn.ModuleList([DecoderLayer(hidden_dim,num_heads,layer_num) for layer_num in range(num_layers)])
         self.max_len = max_len
@@ -187,7 +189,30 @@ class GPT(nn.Module):
         self.num_heads = num_heads
         self.num_layers = num_layers
         self.decoder = Decoder(num_layers,hidden_dim,num_heads,self.vocab_size,max_len)
-        self.decoder.register_backward_hook(backward_hook)                                
+        self.decoder.register_backward_hook(backward_hook)   
+        self.device = "cuda"      
+
+        self.apply(self.init_weights) # is an attribute of nn.Module, basically applies the fn_arg to every module recursively
+
+
+    def init_weights(self,module):        
+        std = 0.02 
+        if hasattr(module,"feed_into_res"):
+            std *= (2*self.num_layers)**(-0.5)
+        # The above initialization is 1/root(d) times 1/root(2*num_layers). 
+        # The latter is because each layer has two residual inputs.
+        # And we know that N random numbers added to them have a standard deviation of root(N). 
+        # And so because we don't want the std of the residual stream to grow, we need to add this factor for the layer that feeds
+        # into the residual stream.
+
+        if isinstance(module,nn.Linear):
+            torch.nn.init.normal_(module.weight, mean = 0.0, std = std)
+            if module.bias is not None:
+                torch.nn.init.zeros_(module.bias)
+        elif isinstance(module, nn.Embedding):
+            torch.nn.init.normal_(module.weight, mean = 0.0, std = 0.02)
+
+
             
     def forward(self, input_ids, attn_mask):                
         # self.tokenize(s) 
@@ -245,6 +270,12 @@ class GPT(nn.Module):
         
 if __name__ == "__main__":
     gpt = GPT(2,64,8,vocab_size=GPT2Tokenizer.from_pretrained('gpt2').vocab_size)        
+    if torch.cuda.is_available():
+        gpt.device = "cuda"        
+    gpt.to(gpt.device)
+    
+    gpt = torch.compile(gpt)
+    
     # gpt = torch.load("model_8_8_256_2.pt")
     # for name,module in gpt.named_modules():
     #     print(name,module)
@@ -252,8 +283,10 @@ if __name__ == "__main__":
     #     print(name,param.shape)
     # output = gpt.generate.forward(["quick brown fox jumped over the dog","I like physics"])
     mytokenizer = tokenizer()    
-    tokens = mytokenizer.forward(["quick brown fox jumped over the dog","I like physics"])              
-    output = gpt.forward(tokens["input_ids"],tokens["attention_mask"])
-    generated, _ = gpt.generate(tokens["input_ids"],tokens["attention_mask"])
+    init = time.time()
+    tokens = mytokenizer.forward(["quick brown fox jumped over the dog","I like physics"])                  
+    print(time.time()-init)
+    # output = gpt.forward(tokens["input_ids"].to(gpt.device),tokens["attention_mask"].to(gpt.device))
+    generated, _ = gpt.generate(tokens["input_ids"].to(gpt.device),tokens["attention_mask"].to(gpt.device))
     print(mytokenizer.tokenizer.batch_decode(generated))
     
