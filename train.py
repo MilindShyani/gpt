@@ -6,11 +6,10 @@ import torch.distributed as dist
 from torch.distributed import init_process_group
 from torch.nn.parallel import DistributedDataParallel as DDP
 
-def train(model,loss,optimizer,tokens,batch_size=4,ddp=False):    
+def train(model,loss,optimizer,tokens,batch_size=8,ddp=False):    
     train_loss = []
     input_ids, attention_mask = tokens["input_ids"], tokens["attention_mask"]
-    if ddp:
-        print("Lets use ddp")
+    if ddp:        
         assert torch.cuda.is_available()
         init_process_group(backend="nccl")
         ddp_rank = int(os.environ["RANK"])
@@ -19,6 +18,7 @@ def train(model,loss,optimizer,tokens,batch_size=4,ddp=False):
         device = f'cuda:{ddp_local_rank}'
         torch.cuda.set_device(device)
         is_master = ddp_local_rank == 0 
+        print(f"Lets use ddp with GPU {device}")
     else:
         ddp_rank = 0
         ddp_local_rank = 0
@@ -33,18 +33,21 @@ def train(model,loss,optimizer,tokens,batch_size=4,ddp=False):
     mega_batch = 2**10
     assert mega_batch % (batch_size*ddp_world_size) == 0
     accum_steps  = mega_batch // (batch_size*ddp_world_size)
+    if is_master == True:
+        print("Accum steps are",accum_steps)
     model.to(device)
     model = DDP(model,device_ids=[ddp_local_rank])
     rawmodel = model.module if ddp else model
     loss_sofar = 0
+
     for epoch in range(num_epochs):
         # torch.save(model,f"model_{model.num_heads}_{model.num_layers}_{model.hidden_dim}_{epoch}.pt")
         # for i in tqdm(range(0,len(input_ids),batch_size)):
         for i in range(ddp_local_rank*batch_size,len(input_ids),batch_size*ddp_world_size):
             optimizer.zero_grad()
             for step in range(accum_steps):
-                start_at = i*batch_size*ddp_world_size 
-                end_at = (i+1)*batch_size*ddp_world_size 
+                start_at = i*batch_size
+                end_at = (i+1)*batch_size
 
                 input_batch = input_ids[start_at:end_at].to(device)
                 attn_batch = attention_mask[start_at:end_at].to(device) 
@@ -59,15 +62,17 @@ def train(model,loss,optimizer,tokens,batch_size=4,ddp=False):
                 # batch_loss has dimensions (B,L-1)
                 batch_loss = batch_loss*attn_batch[:,1:] # double check this 1: vs :-1
                 batch_loss = (1/accum_steps)*torch.mean(batch_loss)
-                loss_sofar += batch_loss.detach()
+                loss_sofar = batch_loss.detach()
                 if step == accum_steps - 1 and ddp:
-                    model.require_backward_grad_sync = True                    
-                batch_loss.backward()
+                    model.require_backward_grad_sync = True                                                
+                batch_loss.backward()                
             if ddp:
                 dist.all_reduce(loss_sofar,op=dist.ReduceOp.AVG)
+                
             optimizer.step()        
             train_loss.append(loss_sofar.item())  
-            print(loss_sofar.item())  
+            if is_master == True:
+                print(loss_sofar.item())  
             if not torch.isfinite(batch_loss):
                 raise Exception("Loss gone crazy")
             if i % 500 == 0:          
